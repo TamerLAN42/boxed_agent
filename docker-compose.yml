@@ -3,7 +3,7 @@ services:
     image: ollama/ollama:0.40.13
     networks:
       - external
-      - internal
+      - ollama2runtime
     restart: unless-stopped
     volumes:
       - ./ollama:/root/.ollama
@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
     read_only: true
     networks:
-      - internal
+      - runtime2sandbox
     tmpfs:
       - /tmp:size=64m
     working_dir: /work
@@ -53,17 +53,17 @@ services:
       context: .
       dockerfile: Dockerfile.runtime
     networks:
-      - internal
-      - external
+      - ollama2runtime
+      - runtime2sandbox
     volumes:
       - ./agent.py:/app/agent.py
 
 networks:
-  external:
-    driver: bridge
-  internal:
-    driver: bridge
+  ollama2runtime:
     internal: true
+  runtime2sandbox:
+    internal: true
+  external:
 
 volumes:
   sandbox-work:
