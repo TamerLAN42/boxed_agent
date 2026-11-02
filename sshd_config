@@ -1,0 +1,40 @@
+# --- Сеть ---
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+
+# --- Host keys ---
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# --- Аутентификация ---
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Разрешаем только пользователя agent (root и остальные — нельзя)
+AllowUsers agent
+PermitRootLogin no
+
+# --- Безопасность/privsep ---
+StrictModes yes
+
+# --- Сессия ---
+MaxAuthTries 3
+MaxSessions 10
+LoginGraceTime 30
+ClientAliveInterval 60
+ClientAliveCountMax 3
+TCPKeepAlive yes
+
+# --- Отключаем лишнее ---
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PermitTunnel no
+PrintMotd no
+PrintLastLog no
+AcceptEnv LANG LC_*
