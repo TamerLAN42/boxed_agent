@@ -6,8 +6,8 @@ RUN ssh-keygen -A
 RUN mkdir -p /run/sshd
 COPY --chown=root:root --chmod=644 sshd_config /etc/ssh/sshd_config
 RUN useradd -s /bin/bash -d /work agent && passwd -d agent
-RUN mkdir -p /work/.ssh && chown -R agent:agent /work && chmod 700 /work/.ssh
-COPY --chown=agent:agent --chmod=600 id_key.pub /work/.ssh/authorized_keys
+RUN mkdir -p /etc/ssh/authorized_keys
+COPY --chown=agent:agent --chmod=644 id_key.pub /etc/ssh/authorized_keys/agent
 COPY --chown=root:root --chmod=700 sandbox-entrypoint.sh /entrypoint.sh
 RUN dos2unix /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

@@ -13,7 +13,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
-AuthorizedKeysFile .ssh/authorized_keys
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
 
 # Разрешаем только пользователя agent (root и остальные — нельзя)
 AllowUsers agent
