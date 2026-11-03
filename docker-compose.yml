@@ -8,6 +8,7 @@ services:
     volumes:
       - ./ollama:/root/.ollama
     environment:
+      - OLLAMA_CONTEXT_LENGTH=16384
       - OLLAMA_KEEP_ALIVE=30m
       - OLLAMA_NUM_PARALLEL=1
     deploy:

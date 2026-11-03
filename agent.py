@@ -3,8 +3,13 @@ from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.messages import (
+    ModelMessage, ModelRequest, UserPromptPart, ToolReturnPart,
+)
 import subprocess
 import os
+from dataclasses import replace
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
@@ -27,7 +32,7 @@ SSH_HOST   = _env("SSH_HOST", "sandbox")
 SSH_USER   = _env("SSH_USER", "agent")
 SSH_KEY    = _env("SSH_KEY", "/root/.ssh/id_ed25519")
 SSH_TIMEOUT = _env_int("SSH_TIMEOUT", 30)
-MAX_OUTPUT  = _env_int("MAX_OUTPUT", 8000)
+MAX_OUTPUT  = _env_int("MAX_OUTPUT", 2000)
 
 # --- Модель ---
 MODEL_NAME     = _env("MODEL_NAME", "hf.co/TokenRhythm/NeoHorse-1-4B-GGUF:Q8_0")
@@ -35,19 +40,60 @@ OLLAMA_URL     = _env("OLLAMA_URL", "http://ollama:11434/v1")
 OLLAMA_API_KEY = _env("OLLAMA_API_KEY", "ollama")
 
 NUM_CTX         = _env_int("NUM_CTX", 16384)
-MAX_TOKENS      = _env_int("MAX_TOKENS", 16384)
+MAX_TOKENS      = _env_int("MAX_TOKENS", 8192)
 TEMPERATURE     = _env_float("TEMPERATURE", 0.3)
 PRESENCE_PENALTY = _env_float("PRESENCE_PENALTY", 0.0)
 TOP_P           = _env_float("TOP_P", 0.95)
 ENABLE_THINKING = _env_bool("ENABLE_THINKING", False)
 
-REQUEST_LIMIT   = _env_int("REQUEST_LIMIT", 25)
-TOOL_CALLS_LIMIT = _env_int("TOOL_CALLS_LIMIT", 50)
+REQUEST_LIMIT   = _env_int("REQUEST_LIMIT", 100)
+TOOL_CALLS_LIMIT = _env_int("TOOL_CALLS_LIMIT", 100)
+
+MAX_MESSAGES    = _env_int("MAX_MESSAGES", 10)
+MAX_OUTPUT_CHARS = _env_int("MAX_OUTPUT_CHARS", 1000)
 
 TASK = _env(
     "TASK",
     "Напиши в рабочей директории калькулятор на python",
 )
+
+def trim_history(
+    messages: list[ModelMessage],
+    max_messages: int = MAX_MESSAGES,
+    max_output_chars: int = MAX_OUTPUT_CHARS,
+) -> list[ModelMessage]:
+    result = []
+    for m in messages:
+        if isinstance(m, ModelRequest):
+            new_parts = []
+            for p in m.parts:
+                if (isinstance(p, ToolReturnPart)
+                        and isinstance(p.content, str)
+                        and len(p.content) > max_output_chars):
+                    p = replace(
+                        p,
+                        content=p.content[:max_output_chars] + "...[truncated]",
+                    )
+                new_parts.append(p)
+            m = replace(m, parts=new_parts)
+        result.append(m)
+
+    if len(result) <= max_messages:
+        return result
+
+    head = next(
+        (m for m in result
+         if isinstance(m, ModelRequest)
+         and any(isinstance(p, UserPromptPart) for p in m.parts)),
+        None,
+    )
+    tail = result[-(max_messages - 1):]
+    while tail and isinstance(tail[0], ModelRequest) and any(
+        isinstance(p, ToolReturnPart) for p in tail[0].parts
+    ):
+        tail = tail[1:]
+
+    return ([head] if head else []) + tail
 
 model = OpenAIChatModel(
     model_name=MODEL_NAME,
@@ -75,7 +121,8 @@ agent = Agent(
         "Не выполняй разрушительных команд (rm -rf /, mkfs, dd на устройства, shutdown) "
         "без явной просьбы. Если команда может быть опасной — сначала уточни у пользователя. "
         "Предпочитай простые команды и по одному шагу за раз."
-    )
+    ),
+    capabilities=[ProcessHistory(trim_history)]
 )
 
 @agent.tool_plain
