@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from pydantic_ai import Agent
+from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -40,6 +40,9 @@ TEMPERATURE     = _env_float("TEMPERATURE", 0.3)
 PRESENCE_PENALTY = _env_float("PRESENCE_PENALTY", 0.0)
 TOP_P           = _env_float("TOP_P", 0.95)
 ENABLE_THINKING = _env_bool("ENABLE_THINKING", False)
+
+REQUEST_LIMIT   = _env_int("REQUEST_LIMIT", 25)
+TOOL_CALLS_LIMIT = _env_int("TOOL_CALLS_LIMIT", 50)
 
 TASK = _env(
     "TASK",
@@ -123,7 +126,12 @@ def get_time() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 if __name__ == "__main__":
-    result = agent.run_sync(TASK)
+    result = agent.run_sync(TASK,
+                            usage_limits=UsageLimits(
+                                request_limit=REQUEST_LIMIT,
+                                tool_calls_limit=TOOL_CALLS_LIMIT,
+                              ),
+                            )
     
     print(result.output)
     
