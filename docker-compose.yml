@@ -32,7 +32,7 @@ services:
       - /tmp:size=64m
     working_dir: /work
     volumes:
-      - sandbox-work:/work:rw
+      - ./work:/work:rw
     mem_limit: 512m
     pids_limit: 128
     security_opt:
@@ -65,6 +65,3 @@ networks:
   runtime2sandbox:
     internal: true
   external:
-
-volumes:
-  sandbox-work:
