@@ -145,9 +145,13 @@ SYSTEM_PROMPT = (
     "1. Твоя рабочая директория — /work. Писать можно только в /work и /tmp, "
     "остальная файловая система только для чтения.\n"
     "2. Сначала осмотрись: `ls -la /work`. Затем действуй по одному шагу за раз.\n"
-    "3. Каждый ответ содержит ровно один вызов run_bash. После каждого вызова смотри "
-    "на `[exit=N]`: 0 — успех, иначе читай stderr и исправляй причину.\n"
+    "3. Один вызов run_bash за ответ — но только если для следующего шага нужен новый "
+    "факт. После каждого вызова смотри на `[exit=N]`: 0 — успех, иначе читай stderr "
+    "и исправляй причину.\n"
     "4. Никогда не повторяй команду, которая уже упала. Меняй подход, читай ошибку.\n"
+    "4a. Никогда не повторяй команду, которая уже прошла успешно: повтор не даёт новой "
+    "информации. Если проверка дала `[exit=0]`, а файл на месте — задача решена, "
+    "переходи к пункту 10.\n"
     "5. Файлы создавай через heredoc, обязательно с кавычками вокруг маркера "
     "(так bash не подставит переменные и не испортит код):\n"
     "   cat > /work/calc.py << 'EOF'\n"
@@ -158,11 +162,12 @@ SYSTEM_PROMPT = (
     "7. Не выводи длинный код в ответ пользователю — пиши его в файл.\n"
     "8. Если файл уже создан, а его содержимое не видно в истории — прочитай его "
     "`cat /work/имя.py` и правь точечно, а не перезаписывай вслепую.\n"
-    "9. Задача считается выполненной, только когда результат проверен: файл существует, "
-    "`python3 -m py_compile файл.py` проходит, и программа реально запускается на пробном вводе.\n"
-    "10. Когда всё проверено, вызови run_bash ещё раз с финальной проверкой "
-    "(`ls -la /work && python3 /work/файл.py <<< '1+2'`) и после этого напиши короткий итог "
-    "без вызовов инструментов: что сделано, какие файлы, чем проверено.\n"
+    "9. Задача считается выполненной, когда файл существует, `python3 -m py_compile файл.py` "
+    "проходит, и программа запускается на пробном вводе. Одного успешного прогона "
+    "достаточно — проверять повторно не нужно.\n"
+    "10. После успешной проверки напиши короткий итог текстом БЕЗ вызовов инструментов: "
+    "что сделано, какие файлы, чем проверено. Ответ без run_bash в этом случае — "
+    "правильное поведение, а не ошибка.\n"
     "\n"
     "Не выполняй разрушительных команд (rm -rf /, mkfs, dd на устройства, shutdown): "
     "они бессмысленны, песочница одноразовая, а задачу всё равно нужно решить."
@@ -348,6 +353,16 @@ def _collect_files(records: list[StepRecord]) -> list[str]:
     return seen[-15:]
 
 
+def _success_counts(records: list[StepRecord]) -> dict[str, int]:
+    """Сколько раз каждая команда завершилась успешно."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record.exit_code == 0:
+            key = record.command.strip()
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _step_warnings(records: list[StepRecord], step: int, request_limit: int | None) -> list[str]:
     """Предупреждения, которые удерживают модель от зацикливания."""
     warnings: list[str] = []
@@ -362,6 +377,15 @@ def _step_warnings(records: list[StepRecord], step: int, request_limit: int | No
         warnings.append(
             f"Команда `{_one_line(cmd, 90)}` уже падала {failed[cmd]} раз. "
             "Не повторяй её — измени подход или сначала прочитай ошибку."
+        )
+
+    # Зациклиться можно и на успехе: модель бесконечно «проверяет» уже работающий файл.
+    # Такие повторы не видны в списке падений, поэтому считаем их отдельно.
+    succeeded = _success_counts(records)
+    for cmd in [c for c, n in succeeded.items() if n >= REPEAT_COMMAND_WARN][-2:]:
+        warnings.append(
+            f"Команда `{_one_line(cmd, 90)}` уже успешно выполнялась {succeeded[cmd]} раз "
+            "и каждый раз дала `[exit=0]`. Повтор не добавит новых фактов — результат уже известен."
         )
 
     if len(records) >= 3 and all(r.exit_code not in (0, None) for r in records[-3:]):
@@ -386,6 +410,28 @@ def _step_warnings(records: list[StepRecord], step: int, request_limit: int | No
             warnings.append(f"Осталось {left} шагов. Начинай сводить работу к проверке результата.")
 
     return warnings
+
+
+def _must_answer(records: list[StepRecord]) -> bool:
+    """Пора ли перестать вызывать инструменты и потребовать текстовый итог.
+
+    Триггеров два, и оба про отсутствие прогресса, а не про ошибки:
+    * одна и та же команда успешно повторяется — её результат уже известен;
+    * четыре подряд успешных шага ничего не меняли в песочнице, а только
+      читали и запускали, то есть проверяли уже проверенное.
+    """
+    if len(records) < 3:
+        return False
+
+    if any(count >= REPEAT_COMMAND_WARN for count in _success_counts(records).values()):
+        return True
+
+    tail = records[-4:]
+    if len(tail) < 4:
+        return False
+    return all(record.exit_code == 0 for record in tail) and not any(
+        _WRITE_RE.search(record.command) for record in tail
+    )
 
 
 def _message_chars(message: ModelMessage) -> int:
@@ -522,11 +568,22 @@ def build_view(
     all_records = _collect_steps(messages)
     files = _collect_files(all_records)
     warnings = _step_warnings(all_records, step, request_limit)
+    must_answer = _must_answer(all_records)
 
     # Короткая история целиком влезает в окно — ничего не сжимаем.
     total_chars = _messages_chars(messages)
     if len(messages) <= max_messages and total_chars <= budget:
-        return list(messages), ViewStats(len(messages), len(messages), 0, total_chars, budget)
+        if not (must_answer or warnings):
+            return list(messages), ViewStats(len(messages), len(messages), 0, total_chars, budget)
+        # Раньше на короткой истории напоминание не добавлялось вовсе, и предупреждения
+        # ("уже падала", "пора закругляться") до модели не доходили.
+        view, chars = _compose_view(
+            head, body, task=task, step=step, digest="", files=files,
+            warnings=warnings, must_answer=must_answer, budget=budget,
+        )
+        if chars <= budget:
+            return view, ViewStats(len(view), len(view), 0, chars, budget)
+        # Напоминание не влезло даже урезанным — собираем окно со сжатием.
 
     limit = max_messages
     view: list[ModelMessage] = []
@@ -551,11 +608,10 @@ def build_view(
         kept = _shrink_old_outputs(kept, old_output_chars)
 
         digest = _render_digest(_collect_steps(dropped), digest_chars)
-        reminder = _render_reminder(task, step, digest, files, warnings)
-
-        view = [head, *kept]
-        view = _append_reminder(view, reminder)
-        chars = _messages_chars(view)
+        view, chars = _compose_view(
+            head, kept, task=task, step=step, digest=digest, files=files,
+            warnings=warnings, must_answer=must_answer, budget=budget,
+        )
         stats = ViewStats(
             total_messages=len(messages),
             kept_messages=len(view),
@@ -575,12 +631,54 @@ _REMINDER_HEADER = (
 )
 
 
+def _compose_view(
+    head: ModelMessage,
+    kept: list[ModelMessage],
+    *,
+    task: str,
+    step: int,
+    digest: str,
+    files: list[str],
+    warnings: list[str],
+    must_answer: bool,
+    budget: int,
+) -> tuple[list[ModelMessage], int]:
+    """Собирает окно с напоминанием, ужимая напоминание под тесный бюджет.
+
+    Порядок жертв: сначала предупреждения, затем дайджест. Задача, номер шага
+    и инструкция «напиши итог» не выбрасываются никогда — иначе модель снова
+    уйдёт в цикл, ради выхода из которого всё и делается.
+    """
+
+    def assemble(items: list[str], summary: str) -> list[ModelMessage]:
+        return _append_reminder(
+            [head, *kept],
+            _render_reminder(task, step, summary, files, items, must_answer=must_answer),
+        )
+
+    view = assemble(warnings, digest)
+    chars = _messages_chars(view)
+
+    trimmed = list(warnings)
+    while chars > budget and trimmed:
+        trimmed.pop(0)
+        view = assemble(trimmed, digest)
+        chars = _messages_chars(view)
+
+    if chars > budget and digest:
+        view = assemble([], "")
+        chars = _messages_chars(view)
+
+    return view, chars
+
+
 def _render_reminder(
     task: str,
     step: int,
     digest: str,
     files: list[str],
     warnings: list[str],
+    must_answer: bool = False,
 ) -> str:
     blocks = [
         _REMINDER_HEADER,
@@ -592,10 +690,17 @@ def _render_reminder(
     if files:
         blocks.append("[ФАЙЛЫ, КОТОРЫЕ ТЫ УЖЕ СОЗДАВАЛ ИЛИ МЕНЯЛ]\n" + ", ".join(files))
     blocks.extend(warnings)
-    blocks.append(
-        "Не повторяй уже выполненные шаги. Продолжай ровно с того места, где остановился: "
-        "один вызов run_bash за ответ."
-    )
+    if must_answer:
+        blocks.append(
+            "РАБОТА УЖЕ ПРОВЕРЕНА. В этом ответе НЕ вызывай run_bash и другие инструменты: "
+            "напиши короткий итог текстом — что сделано, какие файлы, чем проверено. "
+            "Ответ без вызова инструмента здесь и есть правильный."
+        )
+    else:
+        blocks.append(
+            "Не повторяй уже выполненные шаги. Продолжай ровно с того места, где остановился: "
+            "один вызов run_bash за ответ."
+        )
     return "\n\n".join(blocks)
 
 
