@@ -728,12 +728,25 @@ def get_time() -> str:
 
 
 if __name__ == "__main__":
-    result = agent.run_sync(TASK,
-                            usage_limits=UsageLimits(
-                                request_limit=REQUEST_LIMIT,
-                                tool_calls_limit=TOOL_CALLS_LIMIT,
-                              ),
-                            )
-    
+    try:
+        result = agent.run_sync(
+            TASK,
+            usage_limits=UsageLimits(
+                request_limit=REQUEST_LIMIT,
+                tool_calls_limit=TOOL_CALLS_LIMIT,
+            ),
+        )
+    except UsageLimitExceeded as exc:
+        # Не прячем причину, но и не вываливаем простыню трейсбека в логи.
+        print(f"[usage limit] {exc}", flush=True)
+        print(
+            "Агент остановлен по лимиту шагов. Увеличьте REQUEST_LIMIT/TOOL_CALLS_LIMIT "
+            "или упростите задачу.",
+            flush=True,
+        )
+        sys.exit(1)
+    except UnexpectedModelBehavior as exc:
+        print(f"[model error] {exc}", flush=True)
+        sys.exit(2)
+
     print(result.output)
-    
